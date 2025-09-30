@@ -7,10 +7,12 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.db.models.functions import Lower
 from django.db.models import F,Q
+from django.db.models import F, Q, Case, When, Value, FloatField
 from django.contrib.postgres.search import SearchQuery, SearchRank
 from django.contrib.postgres.search import TrigramSimilarity
 from .models import Medicine
 from .serializers import MedicineSerializer
+from django.db.models.functions import Length
 
 DEFAULT_LIMIT = 20
 
@@ -70,73 +72,125 @@ class FuzzySearchView(APIView):
     
 
 def search_view(request):
-    query = request.GET.get("q", "")
-    search_type = request.GET.get("type", "fulltext")  # default fulltext
+    query = request.GET.get("q", "").strip()
+    
     results = []
 
     if query:
-        if search_type == "prefix":
-            results = Medicine.objects.filter(name__istartswith=query)[:20]
-
-        elif search_type == "substring":
-            results = Medicine.objects.filter(name__icontains=query)[:20]
-
-        elif search_type == "fuzzy":
-            results = (
-                Medicine.objects
-                .annotate(similarity=TrigramSimilarity("name", query))
-                .filter(similarity__gt=0.2)
-                .order_by("-similarity")[:20]
+        search_query = SearchQuery(query, config='simple')
+        
+        # 1. Annotate: Calculate all necessary scores first.
+        qs = Medicine.objects.annotate(
+            trigram_sim=TrigramSimilarity('name', query), 
+            rank=SearchRank(F('name_tsv'), search_query),
+            relevance_boost=Case(
+                When(name__iexact=query, then=Value(1.0)), 
+                When(name__istartswith=query, then=Value(0.9)),
+                default=Value(0.0),
+                output_field=FloatField()
             )
-
-        else:  # fulltext
-            sq = SearchQuery(query)
-            results = (
-                Medicine.objects
-                .annotate(rank=SearchRank(F("name_tsv"), sq))
-                .filter(name_tsv=sq)
-                .order_by("-rank")[:20]
-            )
-
+        )
+        
+        # 2. Build the Comprehensive Filter (Single .filter() call with OR logic)
+        # This ensures we include results if they satisfy ANY of the following:
+        
+        combined_filter = (
+            # A) Full-Text Search Match
+            Q(name_tsv=search_query) | 
+            
+            # B) Substring/Prefix Match (covers "Ava" in "Avastin")
+            Q(name__icontains=query) | 
+            
+            # C) Fuzzy Match (Covers "Avastn" using the annotated similarity score)
+            Q(trigram_sim__gte=0.15)  # <-- Use a low threshold (0.1) for max typo tolerance
+        )
+        
+        # 3. Apply Filter and Ordering
+        results = qs.filter(
+            combined_filter
+        ).order_by(
+            '-relevance_boost', 
+            Length('name'),
+            '-rank', 
+            '-trigram_sim', 
+            'name' 
+        )[:20]
+        
     return render(request, "search.html", {
         "results": results,
         "query": query,
-        "search_type": search_type,
     })
 
-# def unified_search_view(request):
-#     query = request.GET.get("q", "").strip()
-#     results = []
+class UnifiedSearchView(APIView):
+    def get(self, request):
+        q = request.GET.get('q', '').strip()
+        limit = int(request.GET.get('limit', DEFAULT_LIMIT))
+        
+        if not q:
+            # Return an empty list if the query is empty
+            return Response([], status=status.HTTP_200_OK)
 
-#     if query:
-#         # Full-text search
-#         sq = SearchQuery(query)
-#         fulltext_filter = Q(name_tsv=sq)
+        # --- Base Search Components ---
+        
+        # 1. Full-text Search (Requires 'name_tsv' on the model)
+        # Use a more sophisticated config like 'english' if needed, but 'simple' is fast.
+        search_query = SearchQuery(q, config='simple')
+        fulltext_filter = Q(name_tsv__search=search_query)
 
-#         # Prefix search
-#         prefix_filter = Q(name__istartswith=query)
+        # 2. Prefix Search (Case-insensitive start)
+        prefix_filter = Q(name__icontains=q) # Use icontains and let ranking handle it, or istartswith for strict prefix
+        # Alternative strict prefix filter: Q(name__istartswith=q)
+        
+        # 3. Fuzzy Search (Trigram Similarity)
+        # We'll use a relatively low threshold and let the similarity score handle the ranking.
+        # Note: TrigramSimilarity is an annotation, so we just use the final filter.
+        # A filter on `name__trigram_similar` can also be used, but let's keep it simple for now and rely on annotation.
 
-#         # Substring search
-#         substring_filter = Q(name__icontains=query)
+        # 4. Keyword Match (Exact case-insensitive match for top relevance)
+        exact_match_filter = Q(name__iexact=q)
+        
+        # Combine all filters with OR. This ensures a broad range of potential matches are included.
+        # The combination is: (Exact OR Prefix OR FullText) and rely on Trigram for fuzzy
+        # Note: `name__icontains` covers prefix and substring. We use it to ensure broad results.
+        combined_filter = Q(name__icontains=q) | fulltext_filter 
 
-#         # Fuzzy search using trigram similarity operator
-#         fuzzy_filter = Q(name__trigram_similar=query)  # automatically fuzzy
+        # --- Annotation and Ranking ---
 
-#         # Combine all filters
-#         combined_filter = fulltext_filter | prefix_filter | substring_filter | fuzzy_filter
-
-#         # Annotate relevance (rank + similarity)
-#         results = (
-#             Medicine.objects
-#             .filter(combined_filter)
-#             .annotate(
-#                 rank=SearchRank(F("name_tsv"), sq),
-#                 similarity=TrigramSimilarity("name", query)
-#             )
-#             .order_by("-rank", "-similarity")[:20]  # top 20
-#         )
-
-#     return render(request, "search.html", {
-#         "results": results,
-#         "query": query,
-#     })
+        # Annotate with PostgreSQL Trigram Similarity and Full-Text Search Rank
+        qs = Medicine.objects.annotate(
+            # Calculate Trigram Similarity (for fuzzy and general relevance)
+            trigram_sim=TrigramSimilarity('name', q),
+            
+            # Calculate Full-Text Search Rank (for relevance based on text weight/position)
+            # Use 'rank' as a final rank component
+            rank=SearchRank(F('name_tsv'), search_query),
+            
+            # Custom relevance boost using Case/When:
+            relevance_boost=Case(
+                # Highest boost for an exact match (case-insensitive)
+                When(name__iexact=q, then=Value(1.0)), 
+                # Good boost for a strict prefix match
+                When(name__istartswith=q, then=Value(0.5)),
+                default=Value(0.0),
+                output_field=FloatField()
+            )
+        ).filter(
+            # Filter to include matches from combined logic (full-text OR substring/prefix/exact)
+            combined_filter, 
+            # AND filter: Only include results that are above a minimum fuzzy threshold 
+            # (optional, but good for filtering out irrelevant trigram noise)
+            trigram_sim__gt=0.2 
+        ).order_by(
+            # Final ordering logic:
+            # 1. Exact/Prefix matches get priority
+            '-relevance_boost', 
+            # 2. Results are ordered by FTS Rank
+            '-rank', 
+            # 3. Then by Trigram Similarity (fuzzy score)
+            '-trigram_sim', 
+            # 4. Fallback to alphabetical order
+            'name' 
+        )[:limit]
+        
+        # --- Response ---
+        return Response(MedicineSerializer(qs, many=True).data)
