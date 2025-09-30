@@ -1,0 +1,35 @@
+{
+    "tests": [
+      {
+        "id": 1,
+        "type": "prefix",
+        "query": "boc"
+      },
+      {
+        "id": 2,
+        "type": "prefix",
+        "query": "Unic"
+      },
+      {
+        "id": 3,
+        "type": "prefix",
+        "query": "Carb"
+      },
+      {
+        "id": 3,
+        "type": "substring",
+        "query": "Leekuf"
+      },
+      {
+        "id": 4,
+        "type": "fuzzy",
+        "query": "daxid"
+      },
+      {
+        "id": 5,
+        "type": "fulltext",
+        "query": "cancer"
+      }
+    ]
+  }
+  

@@ -1,0 +1,22 @@
+# Ignore Python virtual environments
+venv/
+env/
+
+# Ignore Python bytecode
+__pycache__/
+*.py[cod]
+
+# Ignore SQLite database (if used)
+db.sqlite3
+
+# Ignore macOS files
+.DS_Store
+
+# Ignore logs
+*.log
+
+# Ignore migrations (optional — only if you want to recreate them fresh)
+# **/migrations/
+
+# Ignore environment variables (if you have a .env file)
+.env
