@@ -110,4 +110,7 @@ Run benchmark with provided query set:
 python manage.py run_benchmark --queries benchmark_queries.json --out submission.json --limit 10
 ```
 
-## Benchmark details are documented in [Benchmark Report](benchmark.md)
+### Benchmark details are documented in [Benchmark Report](benchmark.md)
+
+## Demo 
+https://github.com/user-attachments/assets/26380a77-daa3-4c84-9bd9-d08b016d38f8
