@@ -5,6 +5,22 @@
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS unaccent;
 
+DROP TABLE IF EXISTS search_medicines;
+CREATE TABLE medicines (
+  id              TEXT PRIMARY KEY,
+  sku_id          TEXT,
+  name            TEXT NOT NULL,
+  manufacturer_name TEXT,
+  marketer_name   TEXT,
+  type            TEXT,
+  price           NUMERIC,
+  pack_size_label TEXT,
+  short_composition TEXT,
+  is_discontinued BOOLEAN,
+  available       BOOLEAN,
+  name_tsv        tsvector -- materialised tsvector for full-text
+);
+
 
 -- 2) create tsvector trigger function (updates name_tsv)
 CREATE OR REPLACE FUNCTION search_medicine_tsv_trigger()
